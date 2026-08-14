@@ -1,0 +1,27 @@
+name: Touhou_Wars
+main: SilverSky\Main
+version: 1.0.1
+api: 2.0.0
+author: BUPT-SilverSky
+
+commands:
+  hub:
+    description: Touhou_Wars指令
+    permission: lobby.command
+  kits:
+    description: Touhou_Wars指令
+    permission: kits.command
+  thw:
+    description: Touhou Wars 管理指令
+    permission: thw.forcestart
+
+permissions:
+  lobby.command:
+    description: "Touhou_Wars Command"
+    default: true
+  kits.command:
+    description: "Touhou_Wars Command"
+    default: true
+  thw.forcestart:
+    description: "强制开始游戏"
+    default: op
