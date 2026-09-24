@@ -68,21 +68,8 @@ trait CombatListener
                         if(isset($this->lengque["prefix"][$name])){}else{
                             $this->lengque["prefix"][$name] = 0;
                         	$this->getServer()->getScheduler()->scheduleDelayedTask(new CallbackTask([$this, "remove"], ["prefix", $name]), 11);
-                    		if($kit == "mage"){
-                        		$job = "魔法使";
-                    		}elseif($kit == "miko"){
-                        		$job = "巫女";
-                    		}elseif($kit == "berserker"){
-                        		$job = "狂战士";
-                    		}elseif($kit == "vampire"){
-                        		$job = "吸血鬼";
-                    		}elseif($kit == "archer"){
-                        		$job = "弓兵";
-                    		}elseif($kit == "saber"){
-                        		$job = "剑士";
-                    		}elseif($kit == "timer"){
-                                $job = "从者";
-                            }
+                		$job = $this->getJobName($kit);
+
                 		if($config->get("team") == "red"){
                         	$player->setNameTag(TF::DARK_GRAY . "[" . TF::RED. $job . TF::WHITE . " $health/$maxHealth" . TF::DARK_GRAY . "]" . TF::RED . $name);
                     	}elseif($config->get("team") == "blue"){
@@ -203,7 +190,7 @@ trait CombatListener
                             $ev->setDamage(8);
                             $rand = mt_rand(1, 100); // 1% 概率触发被动
                             if($rand == 1){
-                                $player->teleport($player->x, $player->y, $player->z); // "禁锢"被动：拉回原位
+                                $player->teleport(new Vector3($player->x, $player->y, $player->z)); // "禁锢"被动：拉回原位
                                 $damager->sendMessage($this->prefix . TF::GRAY . "被动触发");
                             }
                         }
@@ -214,9 +201,9 @@ trait CombatListener
                     $damager->sendMessage($this->prefix . TF::RED . "主播别急，游戏没开始呢");
                 	}
                 }elseif($options->get("timeStop") == 1){ // 时停期间
-                    // 判断攻击者是否被时停定身：在 stopPos 半径 4 格内，且不是时停者本人（从者）
+                    // 判断攻击者是否被时停定身：在 stopPos 半径 6 格内，且不是时停者本人（从者）
                     $isStopper = ($d->get("kit") == "timer" and $d->get("timeStoper") == 1);
-                    $inStopRange = isset($this->stopPos) and $damager->distance($this->stopPos) <= 4;
+                    $inStopRange = isset($this->stopPos) and $damager->distance($this->stopPos) <= 6;
                     if($inStopRange and !$isStopper){ // 被定身：无法攻击
                         $ev->setCancelled();
                         $damager->sendPopup($this->prefix . TF::RED . "时停中，你被定身了！");

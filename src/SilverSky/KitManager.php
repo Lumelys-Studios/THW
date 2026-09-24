@@ -61,14 +61,10 @@ trait KitManager
 	public function teamGive(Player $player){
 		$red = Item::get(35, 14, 1); // 红色羊毛（子ID 14）
         $red_n = $red->setCustomName(TF::RED."Red Team");
-		/*$yellow = Item::get(35, 4, 1); // 黄/绿队已停用（代码保留）
-		$yellow_n = $yellow->setCustomName(TF::YELLOW."Yellow Team");
-		$green = Item::get(35, 5, 1);
-		$green_n = $green->setCustomName(TF::GREEN."Green Team");*/
 		$blue = Item::get(35, 11, 1); // 蓝色羊毛（子ID 11）
 		$blue_n = $blue->setCustomName(TF::BLUE."Blue Team");
 		$inventory = $player->getInventory();
-		$inventory->setContents(array($red_n,/* $yellow_n, $green_n,*/ $blue_n));
+		$inventory->setContents(array($red_n, $blue_n));
 		}
 
 	/**
@@ -196,7 +192,7 @@ trait KitManager
                 $fuka1 = Item::get(339,0,1);
                 $fuka1->setCustomName(TF::RED."被动 禁锢(每次攻击都有极小概率禁锢)");
                 $fuka2 = Item::get(347,0,1);
-                $fuka2->setCustomName(TF::GRAY."血之怀表(时停2.5秒,半径范围4格)");
+                $fuka2->setCustomName(TF::GRAY."血之怀表(时停2.5秒,半径范围6格)");
                 // 金锭：奇术 [永恒的温柔]（向前飞跃冲刺位移）
                 $qishu = Item::get(266,0,1);
                 $qishu->setCustomName(TF::GOLD."奇术".TF::LIGHT_PURPLE."[永恒的温柔](向前飞跃冲刺,CD20s)");

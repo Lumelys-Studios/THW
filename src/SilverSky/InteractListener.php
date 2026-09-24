@@ -33,7 +33,6 @@ use pocketmine\level\Position;
 use pocketmine\block\Block;
 use pocketmine\level\sound\AnvilFallSound;
 use pocketmine\level\sound\BlockBreakSound;
-use pocketmine\level\particle\EnchantmentTableParticle;
 use pocketmine\level\particle\DestroyBlockParticle;
 use pocketmine\math\Vector3;
 use pocketmine\nbt\tag\DoubleTag;
@@ -82,7 +81,9 @@ trait InteractListener
             $options->set("timeStop", 0);
             $options->save();
         }
-        if($options->get("timeStop") == 0){
+        // 技能可用条件：不在时停，或 时停中但玩家在时停范围外（未被定身）也可正常使用技能
+        $canUseSkill = $options->get("timeStop") == 0 or (isset($this->stopPos) and $player->distance($this->stopPos) > 6);
+        if($canUseSkill){
             // ---- 巫女：符卡 [火球]（投掷火球）----
             if($itemId == 339 and $itemName == TF::DARK_PURPLE."符卡 [火球](右键投掷火球,CD2s)" and $kit == "miko"){
                 if(isset($this->lengque["fireball"][$name])){
@@ -430,10 +431,10 @@ trait InteractListener
         	if($itemId == 331 and $itemName == TF::RED."被动 嗜血(普攻吸血70%,上限2点)" and $kit == "vampire"){
                 $ev->setCancelled();
             }
-        	// ---- 从者：血之怀表（时停 2.5 秒，半径4格内全部定身）----
+        	// ---- 从者：血之怀表（时停 2.5 秒，半径6格内全部定身）----
         	// 触发时记录 stopTime（tick数）和 stopPos（中心点），由 GameManager::timeStop()
         	// 每秒处理：范围内非"从者/时停者"的玩家被持续拉回原位并施加缓速。
-        	if($itemId == 347 and $itemName == TF::GRAY."血之怀表(时停2.5秒,半径范围4格)" and $kit == "timer"){
+        	if($itemId == 347 and $itemName == TF::GRAY."血之怀表(时停2.5秒,半径范围6格)" and $kit == "timer" and $options->get("timeStop") == 0){
                 if(isset($this->lengque["clock"][$name])){
                     $ev->setCancelled();
                     $player->sendMessage($this->prefix . TF::RED . "血之怀表 冷却中(CD 50s)");
@@ -442,18 +443,7 @@ trait InteractListener
                     $this->lengque["clock"][$name] = 0;
                     $this->getServer()->getScheduler()->scheduleDelayedTask(new CallbackTask([$this, "remove"], ["clock", $name]),20 * 50);
                     $this->stopPos = new Vector3($player->x, $player->y, $player->z);
-                    $pos = new Vector3($player->x - 4, $player->y + 2, $player->z - 4);
-                    $particle = new EnchantmentTableParticle($pos);
-                    $random = new Random((int) (microtime(true) * 1000) + mt_rand());
-                    $count = 5000;
-                    for($i = 0; $i < $count; ++$i){
-                        $particle->setComponents(
-                        $pos->x + $random->nextSignedFloat() * 8,
-                        $pos->y + $random->nextSignedFloat() * 12,
-                        $pos->z + $random->nextSignedFloat() * 12
-                        );
-                        $player->getLevel()->addParticle($particle);
-                    }
+                    // 音效反馈（粒子特效已移除，降低时停触发瞬间的服务器负载）
                     $player->getLevel()->addSound(new AnvilFallSound($player), $this->getServer()->getLevelByName("kitwars")->getPlayers());
                     $config->set("timeStoper", 1);
                     $options->set("timeStop", 1);
@@ -487,10 +477,7 @@ trait InteractListener
 		// 待游戏开始（GameManager::gameStart 清空背包）或返回大厅（/hub 清空背包）时才会被清除。
 		if($itemId == 35 and $item->getDamage() == 4 and $itemName == TF::YELLOW."Yellow Team"){
 				if(count($this->yellow) !== $options->get("Count")){
-					$this->yellow[$name] = $name;
-					$config->set("team", "yellow");
-					$config->save();
-					$player->setDisplayName(TF::YELLOW . $name);
+					$this->setTeam($player, "yellow"); // 统一入口：先移出旧队名单，再写入新队文件/名单/显示名
 					$player->sendMessage($this->prefix . TF::YELLOW . "你加入了 黄队");
 				}else{
 					$player->sendMessage($this->prefix . TF::DARK_RED . "黄队已满员!");
@@ -498,27 +485,23 @@ trait InteractListener
 			}
 			// 红队（id=35, 子id=14）—— 需与蓝队人数均衡
 			if($itemId == 35 and $item->getDamage() == 14 and $itemName == TF::RED."Red Team"){
-				if(count($this->red) !== $options->get("Count")){
-                    if(count($this->red) <= count($this->blue)){
-						$this->red[$name] = $name;
-						$config->set("team", "red");
-						$config->save();
-						$player->setDisplayName(TF::RED . $name);
-						$player->sendMessage($this->prefix . TF::YELLOW . "你加入了 " . TF::RED . "红队");
-                    }else{
-                        $player->sendMessage($this->prefix . TF::RED . "请保持队伍人数均衡！");
-                        $ev->setCancelled();
-                    }
-				}else{
+				// 计算选队后的两队人数：换队玩家会同时让红队 +1、原在蓝队则蓝队 -1
+				// （不能只算 count(red)+1，否则换队时玩家被新旧两队同时计入，差距算小了）
+				$afterRed   = count($this->red)  + (isset($this->red[$name])  ? 0 : 1);
+				$afterBlue  = count($this->blue) - (isset($this->blue[$name]) ? 1 : 0);
+				if($afterRed <= $options->get("Count") and abs($afterRed - $afterBlue) <= 1){
+					$this->setTeam($player, "red"); // 统一入口：换队时自动从旧队名单移除
+					$player->sendMessage($this->prefix . TF::YELLOW . "你加入了 " . TF::RED . "红队");
+				}elseif($afterRed > $options->get("Count")){
 					$player->sendMessage($this->prefix . TF::DARK_RED . "红队已满员!");
+				}else{
+					$player->sendMessage($this->prefix . TF::RED . "队伍人数差距过大，请加入人数较少的队伍！");
+					$ev->setCancelled();
 				}
 			}
 			if($itemId == 35 and $item->getDamage() == 5 and $itemName == TF::GREEN."Green Team"){
 				if(count($this->green) !== $options->get("Count")){
-					$this->green[$name] = $name;
-					$config->set("team", "green");
-					$config->save();
-					$player->setDisplayName(TF::GREEN . $name);
+					$this->setTeam($player, "green"); // 统一入口：先移出旧队名单，再写入新队文件/名单/显示名
 					$player->sendMessage($this->prefix . TF::YELLOW . "你加入了 " . TF::GREEN . "绿队");
 				}else{
 					$player->sendMessage($this->prefix . TF::DARK_RED . "绿队已满员!");
@@ -526,21 +509,19 @@ trait InteractListener
 			}
 			// 蓝队（id=35, 子id=11）—— 需与红队人数均衡
 			if($itemId == 35 and $item->getDamage() == 11 and $itemName == TF::BLUE."Blue Team"){
-                if(count($this->green) !== $options->get("Count")){
-                    if(count($this->blue) <= count($this->red)){//此处改为两队的条件
-						$this->blue[$name] = $name;
-						$config->set("team", "blue");
-						$config->save();
-						$player->setDisplayName(TF::BLUE . $name);
-						$player->sendMessage($this->prefix . TF::YELLOW . "你加入了 " . TF::BLUE . "蓝队");
-                    }else{
-                        $player->sendMessage($this->prefix . TF::RED . "请保持队伍人数均衡！");
-                        $ev->setCancelled();
-                    }
-				}else{
+				// 计算选队后的两队人数：换队玩家会同时让蓝队 +1、原在红队则红队 -1
+				$afterBlue  = count($this->blue) + (isset($this->blue[$name])  ? 0 : 1);
+				$afterRed   = count($this->red)  - (isset($this->red[$name])   ? 1 : 0);
+				if($afterBlue <= $options->get("Count") and abs($afterRed - $afterBlue) <= 1){
+					$this->setTeam($player, "blue"); // 统一入口：换队时自动从旧队名单移除
+					$player->sendMessage($this->prefix . TF::YELLOW . "你加入了 " . TF::BLUE . "蓝队");
+				}elseif($afterBlue > $options->get("Count")){
 					$player->sendMessage($this->prefix . TF::DARK_RED . "蓝队已满员!");
+				}else{
+					$player->sendMessage($this->prefix . TF::RED . "队伍人数差距过大，请加入人数较少的队伍！");
+					$ev->setCancelled();
+				}
 			}
-		}
     }
 }
 

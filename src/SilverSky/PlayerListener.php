@@ -81,17 +81,31 @@ trait PlayerListener
     public function onDeath(PlayerDeathEvent $ev){
         $player = $ev->getPlayer();
         $name = $player->getName();
-        $config = new Config($this->getDataFolder() . "Teams/" . "$name.yml", Config::YAML);
-        $player->setDisplayName(TF::WHITE.$name); // 复位显示名（去队伍颜色）
-        // 接入 PureChat 称号：恢复玩家名字标签（而不是只显示普通名字）
-        KitWarsIntegration::restoreTitle($player);
+        // 关键状态先清理：死亡玩家必须立即退出队伍。
+        // 若这里漏清 team，gameStartTask 的胜负检测会一直看到 2 个队伍，
+        // 导致游戏结束不了、Start 卡 1、下一局倒计时永远无法开始。
         if($player->getLevel()->getFolderName() == "kitwars"){ // 仅在职业战争地图内生效
             $ev->setDrops(array(Item::get(0,0,0))); // 禁止掉落（空气物品占位）
+            $config = new Config($this->getDataFolder() . "Teams/" . "$name.yml", Config::YAML);
             $config->set("kit", "null");      // 清除职业
             $config->set("team", "null");     // 清除队伍
             $config->set("timeStoper", 0);    // 清除时停标记
             $config->save();
+            // 同步从内存队伍名单移除，保证名单与配置文件一致（与 setTeam 的对齐原则相同）
+            $this->red    = $this->delTeam($this->red, $name);
+            $this->yellow = $this->delTeam($this->yellow, $name);
+            $this->green  = $this->delTeam($this->green, $name);
+            $this->blue   = $this->delTeam($this->blue, $name);
             $player->setMaxHealth(20); // 血量上限重置为默认 20
+        }
+        // 外观/称号类操作放最后并 try/catch：
+        // PureChat 称号恢复一旦异常，不能反过来中断上面的队伍清理（否则会偶发卡死下一局倒计时）
+        try{
+            $player->setDisplayName(TF::WHITE.$name); // 复位显示名（去队伍颜色）
+            // 接入 PureChat 称号：恢复玩家名字标签（而不是只显示普通名字）
+            KitWarsIntegration::restoreTitle($player);
+        }catch(\Exception $e){
+            $this->getLogger()->warning("恢复玩家称号失败: " . $e->getMessage());
         }
     }
 
@@ -104,19 +118,34 @@ trait PlayerListener
 	public function onPlayerQuit(PlayerQuitEvent $ev){
 		$player = $ev->getPlayer();
 		$name = $player->getName();
-		$jc = new Config($this->getDataFolder() . "Teams/" . "$name.yml", Config::YAML);
-		$jc->set("kit", "null");
-		$jc->set("team", "null");
-        $jc->set("timeStoper", 0);
-		$jc->save();
+		// 游戏未开始（含开局倒计时 / 等待开局）时退出：直接删除玩家配置文件，
+		// 防止残留的 kit/team 数据影响下一局的倒计时统计与开局（游戏异常）
+		$options = new Config($this->getDataFolder() . "config.yml", Config::YAML);
+		if($options->get("Start") == 0){
+			$file = $this->getDataFolder() . "Teams/" . "$name.yml";
+			if(is_file($file)){
+				@unlink($file);
+			}
+		}else{
+			// 游戏进行中退出：复位配置（保留文件，玩家重进时 onPlayerJoin 会重建）
+			$jc = new Config($this->getDataFolder() . "Teams/" . "$name.yml", Config::YAML);
+			$jc->set("kit", "null");
+			$jc->set("team", "null");
+	        $jc->set("timeStoper", 0);
+			$jc->save();
+		}
         // 退出服务器的玩家也要踢出对局与等待列表：
         // 从红/黄/绿/蓝队伍名单中移除（delTeam 是传值数组，必须接收返回值才会真正删除）
         $this->red    = $this->delTeam($this->red, $name);
         $this->yellow = $this->delTeam($this->yellow, $name);
         $this->green  = $this->delTeam($this->green, $name);
         $this->blue   = $this->delTeam($this->blue, $name);
-        // 同时退出 Advanced1vs1 匹配队列/决斗（若有）
-        KitWarsIntegration::leaveDuelQueue($player);
+        // 同时退出 Advanced1vs1 匹配队列/决斗（若有；异常只记日志，不影响上面已完成的退出清理）
+        try{
+            KitWarsIntegration::leaveDuelQueue($player);
+        }catch(\Exception $e){
+            $this->getLogger()->warning("退出1v1队列失败: " . $e->getMessage());
+        }
 	}
 
     /**

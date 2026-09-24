@@ -31,6 +31,17 @@ class gameStartTask extends PluginTask{
         static $startseconds = 1800; // 游戏进行总时长上限（秒）
         static $seconds = 60;        // 开局倒计时（秒）
 
+        // 兜底：kitwars 地图被意外卸载（管理操作/其他插件）时自动重载，
+        // 避免 getLevelByName 返回 null 导致本任务每帧报错、倒计时永远无法开始
+        $level = $this->plugin->getServer()->getLevelByName("kitwars");
+        if($level === null){
+            $this->plugin->getServer()->loadLevel("kitwars");
+            $level = $this->plugin->getServer()->getLevelByName("kitwars");
+        }
+        if($level === null){
+            return; // 地图确实无法加载：跳过本帧，等下次再试，不中断任务
+        }
+
         $options = new Config($this->plugin->getDataFolder() . "config.yml", Config::YAML);
         // 兜底：游戏未开始时，确保开局倒计时与总时长处于初始值。
         // 这样即使上一局结算异常漏掉了对 static 变量的重置，也能正常开始下一局。
@@ -42,33 +53,36 @@ class gameStartTask extends PluginTask{
                 $startseconds = 1800;
             }
         }
-		$i = 0; // 统计游戏房间内的玩家数（观察者模式 gamemode=2）
-		foreach($this->plugin->getServer()->getLevelByName("kitwars")->getPlayers() as $player){
-			if($player->getGamemode() == 2){
-				$i++;
-			}
-		}
-		// 诊断日志：游戏未开始但有玩家在房间时，若倒计时未启动则记录原因（排查"游戏结束后无倒计时"）
-		if($options->get("Start") == 0 and $i >= 1 and $i < 2){
-			$this->plugin->getLogger()->info("[Touhou_Wars] 等待开局: 房间人数不足 (i=$i, seconds=$seconds)");
+		$i = 0; // 统计游戏房间内的玩家数（按"在 kitwars 地图"判断，不依赖 gamemode，避免 gamemode 残留导致倒计时统计不到）
+		foreach($level->getPlayers() as $player){
+			$i++;
 		}
 		// ---------- 阶段1：开局倒计时 ----------
-		if($i >= 2 and $seconds > 0 and $options->get("Start") == 0){ // 至少2人、未开始、且未被强制开局
-            $options->set("Starting", 1); // 标记"开局中"
-            $options->save();
-			$seconds--; // 每秒递减
-            foreach($this->plugin->getServer()->getLevelByName("kitwars")->getPlayers() as $player){
-                $player->sendPopup($this->plugin->prefix . TF::GREEN . "游戏还有 $seconds 秒开始");
-            }
-            if($seconds == 0){ // 倒计时结束，正式开局
-                $options->set("Start", 1); // 标记游戏已开始
-                $options->set("Starting", 0);
+		// 人数 ≥2 时倒计时持续进行（玩家中途退出不影响，只要房间仍 ≥2 人）；
+		// 人数 <2 时倒计时重置回 60 秒，等玩家补足 2 人后重新开始
+		if($options->get("Start") == 0 and $seconds > 0){
+            if($i >= 2){
+                $options->set("Starting", 1); // 标记"开局中"
                 $options->save();
+			    $seconds--; // 每秒递减
                 foreach($this->plugin->getServer()->getLevelByName("kitwars")->getPlayers() as $player){
-                    if($player->getGamemode() == 2){
-                        $this->plugin->gameStart($player); // 发放装备+传送出生点（gameStart 内部 balanceTeams 统一均衡分队）
+                    $player->sendPopup($this->plugin->prefix . TF::GREEN . "游戏还有 $seconds 秒开始");
+                }
+                if($seconds == 0){ // 倒计时结束，正式开局
+                    $options->set("Start", 1); // 标记游戏已开始
+                    $options->set("Starting", 0);
+                    $options->save();
+                    try{
+                        $this->plugin->gameStart(); // 只调用一次：内部 balanceTeams 均衡分队 + 发放装备 + 传送出生点
+                    }catch(\Exception $e){
+                        $this->plugin->getLogger()->warning("[Touhou_Wars] 开局异常: " . $e->getMessage());
                     }
                 }
+            }else{
+                // 房间人数 <2：倒计时重置回 60 秒，等玩家补足 2 人后重新开始
+                $seconds = 60;
+                $options->set("Starting", 0);
+                $options->save();
             }
 		}
         // ---------- 阶段2：游戏进行中，检测存活队伍与超时 ----------
@@ -77,10 +91,8 @@ class gameStartTask extends PluginTask{
             // → 自动结束本局并复位游戏状态，保证随时能开始下一局（否则 Start 卡 1 无法重开）
             $roomHasPlayer = false;
             foreach($this->plugin->getServer()->getLevelByName("kitwars")->getPlayers() as $player){
-                if($player->getGamemode() == 2){
-                    $roomHasPlayer = true;
-                    break;
-                }
+                $roomHasPlayer = true; // 在 kitwars 即视为有玩家（不依赖 gamemode）
+                break;
             }
             if(!$roomHasPlayer){
                 $startseconds = 1800;
@@ -105,11 +117,18 @@ class gameStartTask extends PluginTask{
             $i = 0;
             $None = "                                                             ";
             foreach($this->plugin->getServer()->getLevelByName("kitwars")->getPlayers() as $player){
-               // 只统计"身处游戏地图内"且处于游戏状态的玩家，不在 kitwars 地图的不计入胜负判断
-               if($player->getLevel()->getFolderName() == "kitwars" and $player->getGamemode() == 2){
+               // 胜负只计入"在 kitwars、存活、且已有队伍"的玩家（有队伍即视为参与本局，不依赖 gamemode，
+               // 避免 1v1 等其他插件改动 gamemode 后，存活玩家被漏计导致只剩一队也不结束）
+               if($player->getLevel()->getFolderName() == "kitwars"){
                 	$i++;
                 	$name = $player->getName();
                 	$config = new Config($this->plugin->getDataFolder() . "Teams/" . "$name.yml", Config::YAML);
+                	// 死亡玩家不计入存活队伍：即使 onDeath 因异常漏清 team 残留，
+                	// 死亡观战的玩家也不能继续"占着队伍"卡住胜负判定（否则游戏结束不了、
+                	// Start 卡 1，下一局倒计时永远无法开始）
+                	if(!$player->isAlive()){
+                	    continue;
+                	}
                 	// 只统计有效队伍（排除死亡/未分队玩家的 null），
                 	// 否则死亡玩家 team=null 会让队伍种类永远 >1，胜利检测无法触发
                 	$teamVal = $config->get("team");
@@ -120,21 +139,8 @@ class gameStartTask extends PluginTask{
                 	$maxHealth = $player->getMaxHealth();
                 	$kit = $config->get("kit");
                     if($player->getLevel()->getFolderName() == "kitwars"){
-                    	if($kit == "mage"){
-                        	$job = "魔法使";
-                    	}elseif($kit == "miko"){
-                        	$job = "巫女";
-                    	}elseif($kit == "berserker"){
-                        	$job = "狂战士";
-                    	}elseif($kit == "vampire"){
-                        	$job = "吸血鬼";
-                    	}elseif($kit == "archer"){
-                        	$job = "弓兵";
-                    	}elseif($kit == "saber"){
-                        	$job = "剑士";
-                    	}elseif($kit == "timer"){
-                            $job = "从者";
-                        }
+                		$job = $this->plugin->getJobName($kit);
+
                 		if($config->get("team") == "red"){
                         	$player->setNameTag(TF::DARK_GRAY . "[" . TF::RED. $job . TF::WHITE . " $health/$maxHealth" . TF::DARK_GRAY . "]" . TF::RED . $name);
                     	}elseif($config->get("team") == "blue"){
@@ -173,6 +179,7 @@ class gameStartTask extends PluginTask{
             }elseif($team == 0){
                 // 兜底：房间有玩家但无任何有效队伍（全员未分队 / 全员阵亡后 team 均为 null / 存活方已离房）
                 // → 游戏已无法决出胜负，直接结束本局，避免 Start 卡 1 导致下一局无法重开
+                $this->plugin->getLogger()->warning("[Touhou_Wars] 开局后无有效队伍，自动结束本局 (房间人数 i=$i)");
                 $startseconds = 1800;
                 $seconds = 60;
                 $this->plugin->gameEnd();

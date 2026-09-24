@@ -33,7 +33,8 @@ class Main extends PluginBase implements Listener{
 	public $green = array();     // 绿队成员名单（当前版本未启用）
 	public $blue = array();      // 蓝队成员名单
         public $stopTime;   // "时停"剩余 tick 数（血之怀表触发后倒计时）
-        public $stopPos;    // "时停"中心坐标，半径 6 格内的实体被定身
+        public $stopPos;    // "时停"中心坐标，半径 4 格内的实体被定身
+        public $lengque = array(); // 各技能冷却标记表（技能名 => 玩家名 => 冷却中）
 
 	/**
 	 * 插件加载入口 —— 服务器核心启动插件时自动调用
@@ -86,6 +87,7 @@ class Main extends PluginBase implements Listener{
 		$options->save();
         unset($this->lengque); // 清空所有技能冷却表
         unset($this->stopTime); // 清空时停计时
+        unset($this->stopPos);  // 清空时停中心坐标
 	}
 
 }

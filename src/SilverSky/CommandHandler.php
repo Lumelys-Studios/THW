@@ -70,6 +70,11 @@ trait CommandHandler
 			return true;
 		}
 		if($sender instanceof Player){ // 仅玩家可执行
+			// 兜底：kitwars 地图未加载时自动重载，避免下方 getLevelByName 返回 null 导致指令报错、
+			// 玩家无法进入等待大厅（倒计时自然无法开始）
+			if($this->getServer()->getLevelByName("kitwars") === null){
+				$this->getServer()->loadLevel("kitwars");
+			}
 			$i = 1; // 统计当前游戏房间人数（从 1 开始，实际+1）
 			foreach($this->getServer()->getLevelByName("kitwars")->getPlayers() as $player){
 				if($player->getGamemode() == 2){
@@ -81,58 +86,72 @@ trait CommandHandler
 			$config = new Config($this->getDataFolder() . "Teams/" . "$name.yml", Config::YAML);
 			switch($command->getName()){
                 case "hub": // 回大厅：传送出生点、清背包、退1v1队列、清装备、重置生命/模式
+                    // ---- 关键：先彻底退出本插件对局（内存队伍名单 + 配置文件）。
+                    // 放在最前面无条件执行，保证即使后面的外部插件调用异常，
+                    // 玩家也已经退出游戏，不会残留 team/kit 数据影响下一局 ----
+                    $this->red    = $this->delTeam($this->red, $name);
+                    $this->yellow = $this->delTeam($this->yellow, $name);
+                    $this->green  = $this->delTeam($this->green, $name);
+                    $this->blue   = $this->delTeam($this->blue, $name);
+                    $file = $this->getDataFolder() . "Teams/" . "$name.yml";
+                    if(is_file($file)){
+                        @unlink($file); // 重进时 onPlayerJoin 会重建
+                    }
+                    // ---- 回城流程 ----
 					$level = $this->getServer()->getDefaultLevel();
-        			$sender->teleport($level->getSafeSpawn());
+                    if($level !== null){
+                        $sender->teleport($level->getSafeSpawn());
+                    }
         			$sender->getInventory()->clearAll();
-        			KitWarsIntegration::leaveDuelQueue($sender);
-        			KitWarsIntegration::clearPlayerKit($sender);
                     $sender->removeAllEffects();
         			$sender->setFood(20);
         			$sender->setMaxHealth(20);
         			$sender->setHealth(20);
         			$sender->setGamemode(2);
-                        if($config->get("team") == "red"){
-                            $this->delTeam($this->red, $name);
-                            $sender->setDisplayName(TF::WHITE.$name);
-                        }elseif($config->get("team") == "yellow"){
-                            $this->delTeam($this->yellow, $name);
-                            $sender->setDisplayName(TF::WHITE.$name);
-                        }elseif($config->get("team") == "green"){
-                            $this->delTeam($this->green, $name);
-                            $sender->setDisplayName(TF::WHITE.$name);
-                        }elseif($config->get("team") == "blue"){
-                            $this->delTeam($this->blue, $name);
-                            $sender->setDisplayName(TF::WHITE.$name);
-                        }
-                        // 接入 PureChat 称号：恢复玩家的前缀/名字标签
+                    // ---- 外部插件整合（异常只记日志，绝不能中断上面的退出流程）----
+                    try{
+                        KitWarsIntegration::leaveDuelQueue($sender); // 退出 Advanced1vs1 匹配队列/决斗（含孤儿决斗）
+                    }catch(\Exception $e){
+                        $this->getLogger()->warning("退出1v1队列失败: " . $e->getMessage());
+                    }
+                    try{
+                        KitWarsIntegration::clearPlayerKit($sender); // 清除 KitKB 装备残留
+                    }catch(\Exception $e){
+                        $this->getLogger()->warning("清除KitKB装备失败: " . $e->getMessage());
+                    }
+                    // 接入 PureChat 称号：恢复玩家的前缀/名字标签（异常不影响退出对局）
+                    try{
+                        $sender->setDisplayName(TF::WHITE.$name);
                         KitWarsIntegration::restoreTitle($sender);
-                        $config->set("team", "null");
-                        $config->set("kit","null");
-                        $config->save();
+                    }catch(\Exception $e){
+                        $this->getLogger()->warning("恢复玩家称号失败: " . $e->getMessage());
+                    }
                     break;
 				case "kits": // 加入游戏/选择职业（仅游戏未开始时可用）
 				if(isset($args[0]) and $options->get("Start") == 0){
 					switch(strval($args[0])){
 						case "join": // 加入游戏房间（人数上限16）
 						if($i < 16){
+                            // 为每个使用 join 的玩家无条件设定满足倒计时的状态：
+                            // 必须在 kitwars 地图、gamemode=2（gameStartTask 按 gamemode==2 统计倒计时人数 $i）
                             if($sender->getLevel() != $this->getServer()->getLevelByName("kitwars")){
 							$sender->teleport($this->getServer()->getLevelByName("kitwars")->getSafeSpawn());
 							foreach($this->getServer()->getLevelByName("kitwars")->getPlayers() as $player){
                                 $player->sendMessage($this->prefix . TF::RED . "$name 加入了职业战争！" . TF::GREEN . " [$i/16]");
                             }
+                            }else{
+                                $sender->sendMessage($this->prefix . TF::RED . "你已经在游戏房间里了！");
+                            }
+                            // 无条件设定：清理 1v1 等其他插件残留 + gamemode=2 + 补发选队羊毛 + 初始化职业
+                            // 玩家从 Advanced1vs1 决斗（gamemode 被设为 0）等场景回来后，必须彻底复位才能被职业战争正常统计/传送
                             $sender->setGamemode(2);
+                            $sender->removeAllEffects();
+                            $sender->getInventory()->clearAll();
+                            KitWarsIntegration::leaveDuelQueue($sender); // 退出 Advanced1vs1 匹配队列/决斗（含孤儿决斗）
+                            KitWarsIntegration::clearPlayerKit($sender); // 清除 KitKB 装备残留
 							$this->teamGive($sender);
                             $config->set("kit", "miko");
                             $config->save();
-                            }else{
-                                // 已在房间：也强制恢复游戏状态（gamemode=2 + 补发选队羊毛），
-                                // 避免玩家留在房间但状态残留导致倒计时统计不到（$i < 2）而无法开局
-                                $sender->setGamemode(2);
-                                $this->teamGive($sender);
-                                $config->set("kit", "miko");
-                                $config->save();
-                                $sender->sendMessage($this->prefix . TF::RED . "你已经在游戏房间里了！");
-                            }
                         }else{
 							$sender->sendMessage($this->prefix . TF::RED . "游戏已满人！");
 						}
